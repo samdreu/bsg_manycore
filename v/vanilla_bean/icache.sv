@@ -285,8 +285,8 @@ module icache
     end
   end
 
-  wire is_jal_instr =  instr_out.op == `RV32_JAL_OP;
-  wire is_jalr_instr = instr_out.op == `RV32_JALR_OP;
+  wire is_jal_instr =  instr_out.op ==? `RV32_JAL_OP;
+  wire is_jalr_instr = instr_out.op ==? `RV32_JALR_OP;
 
   // these are bytes address
   logic [pc_width_lp+2-1:0] jal_pc;
@@ -297,12 +297,20 @@ module icache
 
   // assign outputs.
  // ********************** modify for dual issue **************************
-
+// wire testing_op = instru.out.op;
+// wire
 // Classify instructions: INT includes RV32_OP and RV32_OP_IMM, FP is RV32_OP_FP
-logic out_is_int = ((instr_out.op == `RV32_OP) || (instr_out.op == `RV32_OP_IMM));
-logic out_is_fp  = (instr_out.op == `RV32_OP_FP);
-logic next_is_int= ((instr_out_next.op == `RV32_OP) || (instr_out_next.op == `RV32_OP_IMM));
-logic next_is_fp = (instr_out_next.op == `RV32_OP_FP);
+logic out_is_int;
+logic out_is_fp;
+logic next_is_int;
+logic next_is_fp;
+
+assign out_is_int = ((instr_out.op ==? `RV32_OP) || (instr_out.op ==? `RV32_OP_IMM));
+assign out_is_fp  = (instr_out.op ==? `RV32_OP_FP);
+assign next_is_int= ((instr_out_next.op ==? `RV32_OP) || (instr_out_next.op ==? `RV32_OP_IMM));
+assign next_is_fp = (instr_out_next.op ==? `RV32_OP_FP);
+
+
 
 // Directly include branch/jump check into execute_next:
 // Dual issue if:
@@ -310,9 +318,9 @@ logic next_is_fp = (instr_out_next.op == `RV32_OP_FP);
 // 2) Not at the end of the block
 // 3) One is INT and the other is FP
 assign execute_next =
-    ~((instr_out.op == `RV32_BRANCH)  || (instr_out_next.op == `RV32_BRANCH) ||
-      (instr_out.op == `RV32_JAL_OP)  || (instr_out_next.op == `RV32_JAL_OP) ||
-      (instr_out.op == `RV32_JALR_OP) || (instr_out_next.op == `RV32_JALR_OP))
+    ~((instr_out.op ==? `RV32_BRANCH)  || (instr_out_next.op ==? `RV32_BRANCH) ||
+      (instr_out.op ==? `RV32_JAL_OP)  || (instr_out_next.op ==? `RV32_JAL_OP) ||
+      (instr_out.op ==? `RV32_JALR_OP) || (instr_out_next.op ==? `RV32_JALR_OP))
     & ~(&pc_r[0+:icache_block_offset_width_lp])
     & ((out_is_int && next_is_fp) || (out_is_fp && next_is_int));
 
