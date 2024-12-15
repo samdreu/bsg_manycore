@@ -20,9 +20,15 @@ module regfile_synth
     input clk_i
     , input reset_i
 
+    // write port 1
     , input w_v_i
     , input [addr_width_lp-1:0] w_addr_i
     , input [width_p-1:0] w_data_i
+
+    // write port 2
+    , input w_v_i_2
+    , input [addr_width_lp-1:0] w_addr_i_2
+    , input [width_p-1:0] w_data_i_2
     
     , input [num_rs_p-1:0] r_v_i
     , input [num_rs_p-1:0][addr_width_lp-1:0] r_addr_i
@@ -47,9 +53,14 @@ module regfile_synth
     for (genvar i = 0; i < num_rs_p; i++)
       assign r_data_o[i] = (r_addr_r[i] == '0)? '0 : mem_r[r_addr_r[i]];
 
-    always_ff @ (posedge clk_i)
+    always_ff @ (posedge clk_i) begin
+      // if (w_v_i & (w_addr_i != '0))
+      //   mem_r[w_addr_i] <= w_data_i;
       if (w_v_i & (w_addr_i != '0))
         mem_r[w_addr_i] <= w_data_i;
+      if (w_v_i_2 & (w_addr_i_2 != '0))
+        mem_r[w_addr_i_2] <= w_data_i_2;
+    end
 
 
   end
@@ -60,9 +71,14 @@ module regfile_synth
     for (genvar i = 0; i < num_rs_p; i++)
       assign r_data_o[i] = mem_r[r_addr_r[i]];
 
-    always_ff @ (posedge clk_i)
+    always_ff @ (posedge clk_i) begin
+      // if (w_v_i)
+      //   mem_r[w_addr_i] <= w_data_i;
       if (w_v_i)
         mem_r[w_addr_i] <= w_data_i;
+      if (w_v_i_2)
+        mem_r[w_addr_i_2] <= w_data_i_2;
+    end
     
   end
 

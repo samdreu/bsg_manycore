@@ -38,7 +38,10 @@ module icache
     // icache read (by processor)
     , input [pc_width_lp-1:0] pc_i
     , input [pc_width_lp-1:0] jalr_prediction_i
-    , output [RV32_instr_width_gp-1:0] instr_o
+    //, output [RV32_instr_width_gp-1:0] instr_o
+    , output [RV32_instr_width_gp-1:0] instr_int_o // dual issue
+    , output [RV32_instr_width_gp-1:0] instr_fp_o  // dual issue
+    , output execute_next // dual issue
     , output [pc_width_lp-1:0] pred_or_jump_addr_o
     , output [pc_width_lp-1:0] pc_r_o
     , output icache_miss_o
@@ -227,8 +230,15 @@ module icache
     : (v_i & ((&pc_r[0+:icache_block_offset_width_lp]) | ~read_pc_plus4_i));
 
 
-  // Merge the PC lower part and high part
+
+   // Merge the PC lower part and high part
   // BYTE operations
+  instruction_s instr_out_next;
+
+  logic [pc_width_lp-1:0] pc_next;
+  assign pc_next = pc_r + 1'b1;
+  assign instr_out_next = icache_data_lo.instr[pc_next[0+:icache_block_offset_width_lp]];
+
   instruction_s instr_out;
   assign instr_out = icache_data_lo.instr[pc_r[0+:icache_block_offset_width_lp]];
   wire lower_sign_out = icache_data_lo.lower_sign[pc_r[0+:icache_block_offset_width_lp]];
@@ -249,7 +259,7 @@ module icache
   // We are saving the carry-out when we are partially computing the
   // lower-portion jump addr, as we write to the icache.
   // When we are calculating the full jump addr, as we read back from the icache,
-  // we decide how to propagate the carry to the upper portion of the jump
+  // we decide how to propagate the carry to theupper portion of the jump
   // addr, using this table.
   // -------------------------------------------------------------
   // pc_lower_sign  pc_lower_cout  | pc_high-1  pc_high  pc_high+1
@@ -286,8 +296,37 @@ module icache
   assign jal_pc = {jal_pc_high_out, `RV32_Jimm_21extract(instr_out)};
 
   // assign outputs.
-  assign instr_o = instr_out;
-  assign pc_r_o = pc_r;
+ // ********************** modify for dual issue **************************
+
+// Classify instructions: INT includes RV32_OP and RV32_OP_IMM, FP is RV32_OP_FP
+logic out_is_int = ((instr_out.op == `RV32_OP) || (instr_out.op == `RV32_OP_IMM));
+logic out_is_fp  = (instr_out.op == `RV32_OP_FP);
+logic next_is_int= ((instr_out_next.op == `RV32_OP) || (instr_out_next.op == `RV32_OP_IMM));
+logic next_is_fp = (instr_out_next.op == `RV32_OP_FP);
+
+// Directly include branch/jump check into execute_next:
+// Dual issue if:
+// 1) No branch/jump in these two instructions
+// 2) Not at the end of the block
+// 3) One is INT and the other is FP
+assign execute_next =
+    ~((instr_out.op == `RV32_BRANCH)  || (instr_out_next.op == `RV32_BRANCH) ||
+      (instr_out.op == `RV32_JAL_OP)  || (instr_out_next.op == `RV32_JAL_OP) ||
+      (instr_out.op == `RV32_JALR_OP) || (instr_out_next.op == `RV32_JALR_OP))
+    & ~(&pc_r[0+:icache_block_offset_width_lp])
+    & ((out_is_int && next_is_fp) || (out_is_fp && next_is_int));
+
+// Select INT/FP outputs
+assign instr_int_o = execute_next ? (out_is_int ? instr_out : instr_out_next) : instr_out;
+assign instr_fp_o  = execute_next ? (out_is_fp  ? instr_out : instr_out_next) : instr_out;
+
+// Update PC if dual issue occurs
+assign pc_r_o = execute_next ? pc_r + 1 : pc_r;
+// *************************************************************************
+
+  //assign instr_o = instr_out;
+  //assign pc_r_o = pc_r;
+  
 
   // this is word addr.
   assign pred_or_jump_addr_o = is_jal_instr
