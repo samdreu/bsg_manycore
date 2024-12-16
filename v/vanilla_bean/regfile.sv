@@ -26,6 +26,10 @@ module regfile
     , input w_v_i
     , input [addr_width_lp-1:0] w_addr_i
     , input [width_p-1:0] w_data_i
+
+    , input w_v_i_2
+    , input [addr_width_lp-1:0] w_addr_i_2
+    , input [width_p-1:0] w_data_i_2
     
     , input [num_rs_p-1:0] r_v_i
     , input [num_rs_p-1:0][addr_width_lp-1:0] r_addr_i

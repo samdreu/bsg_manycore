@@ -129,8 +129,8 @@ module vanilla_core
   // ctrl signals set to zero when reset_i is high.
   // data signals are not reset to zero.
   logic id_en, exe_en, mem_ctrl_en, mem_data_en,
-        fp_exe_ctrl_en, fp_exe_data_en, flw_wb_ctrl_en, flw_wb_data_en;
-  id_signals_s id_r, id_n;
+        id_en_fp, fp_exe_ctrl_en, fp_exe_data_en, flw_wb_ctrl_en, flw_wb_data_en;
+  id_signals_s id_r, id_n, id_r_fp, id_n_fp; // TODO: maybe add fp here?
   exe_signals_s exe_r, exe_n;
   mem_ctrl_signals_s mem_ctrl_r, mem_ctrl_n;
   mem_data_signals_s mem_data_r, mem_data_n;
@@ -182,7 +182,11 @@ module vanilla_core
     ,.pc_i(pc_n)
     ,.jalr_prediction_i(jalr_prediction)
 
-    ,.instr_o(instruction)
+    //,.instr_o(instruction)
+    ,.instr_int_o(instruction)
+    ,.instr_fp_o(instruction_fp)
+    ,.execute_next(execute_next)
+    //modified dual issue
     ,.pred_or_jump_addr_o(pred_or_jump_addr)
     ,.pc_r_o(pc_r)
     ,.icache_miss_o(icache_miss)
@@ -200,7 +204,13 @@ module vanilla_core
     end
     else begin
       if (ifetch_v_i) begin
-        ifetch_count_r <= ifetch_count_r + 1'b1;
+        // ifetch_count_r <= ifetch_count_r + 1'b1;
+        if(execute_next)
+          ifetch_count_r <= ifetch_count_r + 2'd2;
+        else
+          ifetch_count_r <= ifetch_count_r + 1'b1;
+          //modified dual issue
+
       end
     end
   end
@@ -213,9 +223,10 @@ module vanilla_core
   // synopsys translate_on
 
   // instruction decode
-  //
+  // TODO: maybe need to edit this?
   decode_s decode;
   fp_decode_s fp_decode;
+  fp_decode_s fp_decode_fp;
 
   cl_decode decode0 (
     .instruction_i(instruction)
@@ -223,6 +234,12 @@ module vanilla_core
     ,.fp_decode_o(fp_decode)
   ); 
 
+//modified for dual issue
+  cl_decode decode1 (
+    .instruction_i(instruction_fp)
+    ,.decode_o(decode_fp)
+    ,.fp_decode_o(fp_decode_fp)
+  ); 
 
   //////////////////////////////
   //                          //
@@ -230,16 +247,31 @@ module vanilla_core
   //                          //
   //////////////////////////////
 
-  bsg_dff_reset_en #(
-    .width_p($bits(id_signals_s))
-  ) id_pipeline (
-    .clk_i(clk_i)
-    ,.reset_i(reset_i)
-    ,.en_i(id_en)
-    ,.data_i(id_n)
-    ,.data_o(id_r)
-  );
-  
+// 
+reg [$bits(id_signals_s)-1:0] id_r_reg;
+reg [$bits(id_signals_s)-1:0] id_r_fp_reg;
+
+always_ff @(posedge clk_i or posedge reset_i) begin
+  if (reset_i) begin
+    // Reset 時將兩個 pipeline 清零 two resets
+    id_r_reg <= '0;
+    id_r_fp_reg <= '0;
+  end else begin
+    // 根據 enable 信號決定是否更新值 Decide whether to update the value based on the enable signal
+    if (id_en) begin
+      id_r_reg <= id_n;
+    end
+    if (id_en_fp) begin
+      id_r_fp_reg <= id_n_fp;
+    end
+  end
+end
+
+// 輸出 assign output
+assign id_r = id_r_reg;
+assign id_r_fp = id_r_fp_reg;
+//dual issue
+
   // int regfile
   //
   logic int_rf_wen;
@@ -261,6 +293,10 @@ module vanilla_core
     ,.w_v_i(int_rf_wen)
     ,.w_addr_i(int_rf_waddr)
     ,.w_data_i(int_rf_wdata)
+
+    ,.w_v_i_2('0) // will not be writing to this port
+    ,.w_addr_i_2('0)
+    ,.w_data_i_2('0)
 
     ,.r_v_i(int_rf_read)
     ,.r_addr_i({instruction.rs2, instruction.rs1})
@@ -306,28 +342,56 @@ module vanilla_core
   logic float_rf_wen;
   logic [reg_addr_width_lp-1:0] float_rf_waddr;
   logic [fpu_recoded_data_width_gp-1:0] float_rf_wdata;
+
+  // TODO: set these if in the int pipeline, there is a fp load
+  logic float_rf_wen_load_fp;
+  logic [reg_addr_width_lp-1:0] float_rf_waddr_load_fp;
+  logic [fpu_recoded_data_width_gp-1:0] float_rf_wdata_load_fp;
  
   logic [2:0] float_rf_read;
   logic [2:0][fpu_recoded_data_width_gp-1:0] float_rf_rdata;
 
-  regfile #(
-    .width_p(fpu_recoded_data_width_gp)
-    ,.els_p(RV32_reg_els_gp)
-    ,.num_rs_p(3)
-    ,.x0_tied_to_zero_p(0)
-  ) float_rf (
-    .clk_i(clk_i)
-    ,.reset_i(reset_i)
+  // regfile #(
+  //   .width_p(fpu_recoded_data_width_gp)
+  //   ,.els_p(RV32_reg_els_gp)
+  //   ,.num_rs_p(3)
+  //   ,.x0_tied_to_zero_p(0)
+  // ) float_rf (
+  //   .clk_i(clk_i)
+  //   ,.reset_i(reset_i)
 
-    ,.w_v_i(float_rf_wen)
-    ,.w_addr_i(float_rf_waddr)
-    ,.w_data_i(float_rf_wdata)
+  //   ,.w_v_i(float_rf_wen)
+  //   ,.w_addr_i(float_rf_waddr)
+  //   ,.w_data_i(float_rf_wdata)
 
-    ,.r_v_i(float_rf_read)
-    ,.r_addr_i({instruction[31:27], instruction.rs2, instruction.rs1})
-    ,.r_data_o(float_rf_rdata)
-  );
+  //   ,.r_v_i(float_rf_read)
+  //   ,.r_addr_i({instruction[31:27], instruction.rs2, instruction.rs1})
+  //   ,.r_data_o(float_rf_rdata)
+  // );
 
+    regfile #(
+      .width_p(fpu_recoded_data_width_gp),
+      .els_p(RV32_reg_els_gp),
+      .num_rs_p(3),
+      // .num_write_port_p(2), // second port
+      .x0_tied_to_zero_p(0)
+    ) float_rf (
+      .clk_i(clk_i),
+      .reset_i(reset_i),
+
+      .w_v_i(float_rf_wen),
+      .w_addr_i(float_rf_waddr),
+      .w_data_i(float_rf_wdata),
+
+      .w_v_i_2(float_rf_wen_load_fp),
+      .w_addr_i_2(float_rf_waddr_load_fp),
+      .w_data_i_2(float_rf_wdata_load_fp),
+
+      .r_v_i(float_rf_read),
+      // for some reason using instruction_fp.rs(1,2) here causes a compile error
+      .r_addr_i({instruction_fp[31:27], id_rs2_fp, id_rs1_fp}),
+      .r_data_o(float_rf_rdata)
+    );
 
   // FP scoreboard
   //
@@ -345,12 +409,12 @@ module vanilla_core
   ) float_sb (
     .clk_i(clk_i)
     ,.reset_i(reset_i)
-  
-    ,.src_id_i({id_r.instruction[31:27], id_r.instruction.rs2, id_r.instruction.rs1})
-    ,.dest_id_i(id_r.instruction.rd)
+  //modified for dual issue
+    ,.src_id_i({id_r_fp.instruction[31:27], id_r_fp.instruction.rs2, id_r_fp.instruction.rs1})
+    ,.dest_id_i(id_r_fp.instruction.rd)
 
-    ,.op_reads_rf_i({id_r.decode.read_frs3, id_r.decode.read_frs2, id_r.decode.read_frs1})
-    ,.op_writes_rf_i(id_r.decode.write_frd)
+    ,.op_reads_rf_i({id_r_fp.decode.read_frs3, id_r_fp.decode.read_frs2, id_r_fp.decode.read_frs1})
+    ,.op_writes_rf_i(id_r_fp.decode.write_frd)
 
     ,.score_i(float_sb_score)
     ,.score_id_i(float_sb_score_id)
@@ -480,6 +544,7 @@ module vanilla_core
 
   // calculate mem address offset
   //
+  // TODO: maybe change this?? depending on where its going
   wire [RV32_Iimm_width_gp-1:0] mem_addr_op2 = id_r.decode.is_store_op
     ? `RV32_Simm_12extract(id_r.instruction)
     : (id_r.decode.is_load_op
@@ -1268,84 +1333,178 @@ module vanilla_core
 
 
   // IF -> ID
-  always_comb begin
-    // common case
-    id_n = '{
-      pc_plus4: {{(data_width_p-pc_width_lp-2){1'b0}}, pc_plus4, 2'b0},
-      pred_or_jump_addr: {{(data_width_p-pc_width_lp-2){1'b0}}, pred_or_jump_addr, 2'b0},
-      instruction: instruction,
-      decode: decode,
-      fp_decode: fp_decode,
-      icache_miss: 1'b0,
-      valid: 1'b1,
-      branch_predicted_taken:  icache_branch_predicted_taken_lo
-    };
+  // always_comb begin
+  //   // common case
+  //   id_n = '{
+  //     pc_plus4: {{(data_width_p-pc_width_lp-2){1'b0}}, pc_plus4, 2'b0},
+  //     pred_or_jump_addr: {{(data_width_p-pc_width_lp-2){1'b0}}, pred_or_jump_addr, 2'b0},
+  //     instruction: instruction,
+  //     decode: decode,
+  //     fp_decode: fp_decode,
+  //     icache_miss: 1'b0,
+  //     valid: 1'b1,
+  //     branch_predicted_taken:  icache_branch_predicted_taken_lo
+  //   };
 
-    if (stall_all) begin
+  //   if (stall_all) begin
+  //     id_en = 1'b0;
+  //   end
+  //   else begin
+  //     if (reset_down | flush) begin
+  //       id_en = 1'b1;
+  //       id_n = '0;
+  //     end    
+  //     else if (stall_id) begin
+  //       id_en = 1'b0;
+  //     end
+  //     // When stall_id is high, icache miss should not be flushing ID.
+  //     else if (icache_miss_in_pipe | icache_flush_r_lo) begin
+  //       id_en = 1'b1;
+  //       id_n = '0;
+  //     end
+  //     else if (icache_miss) begin
+  //       id_en = 1'b1;
+  //       id_n = '{
+  //         pc_plus4: {{(data_width_p-pc_width_lp-2){1'b0}}, pc_plus4, 2'b0},
+  //         pred_or_jump_addr: '0,
+  //         instruction: '0,
+  //         decode: '0,
+  //         fp_decode: '0,
+  //         icache_miss: 1'b1,
+  //         valid: 1'b0,
+  //         branch_predicted_taken: 1'b0
+  //       };
+  //     end
+  //     else begin
+  //       // common case
+  //       id_en = 1'b1;
+  //     end
+  //   end
+  // end
+
+//dual issue
+always_comb begin
+  // 通用邏輯 universal logic
+  automatic logic [data_width_p-1:0] pc_plus4_comb = {{(data_width_p-pc_width_lp-2){1'b0}}, pc_plus4, 2'b0};
+  automatic logic [data_width_p-1:0] pred_or_jump_addr_comb = {{(data_width_p-pc_width_lp-2){1'b0}}, pred_or_jump_addr, 2'b0};
+
+  // 整數和浮點數輸出的初始值 Initial value for integer and floating point output
+  id_n = '{
+    pc_plus4: pc_plus4_comb,
+    pred_or_jump_addr: pred_or_jump_addr_comb,
+    instruction: instruction,
+    decode: decode,
+    fp_decode: fp_decode,
+    icache_miss: 1'b0,
+    valid: 1'b1,
+    branch_predicted_taken: icache_branch_predicted_taken_lo
+  };
+
+  id_n_fp = '{
+    pc_plus4: pc_plus4_comb,
+    pred_or_jump_addr: pred_or_jump_addr_comb,
+    instruction: instruction_fp,
+    decode: decode_fp,
+    fp_decode: fp_decode_fp,
+    icache_miss: 1'b0,
+    valid: 1'b1,
+    branch_predicted_taken: icache_branch_predicted_taken_lo
+  };
+
+  // 阻塞或特殊情況處理 Blocking or special case handling
+  if (stall_all) begin
+    id_en = 1'b0;
+    id_en_fp = 1'b0;
+  end
+  else begin
+    if (reset_down | flush) begin
+      id_en = 1'b1;
+      id_en_fp = 1'b1;
+      id_n = '0;
+      id_n_fp = '0;
+    end    
+    else if (stall_id) begin
       id_en = 1'b0;
+      id_en_fp = 1'b0;
+    end
+    else if (icache_miss_in_pipe | icache_flush_r_lo) begin
+      id_en = 1'b1;
+      id_en_fp = 1'b1;
+      id_n = '0;
+      id_n_fp = '0;
+    end
+    else if (icache_miss) begin
+      id_en = 1'b1;
+      id_en_fp = 1'b1;
+      id_n = '{
+        pc_plus4: pc_plus4_comb,
+        pred_or_jump_addr: '0,
+        instruction: '0,
+        decode: '0,
+        fp_decode: '0,
+        icache_miss: 1'b1,
+        valid: 1'b0,
+        branch_predicted_taken: 1'b0
+      };
+      id_n_fp = '{
+        pc_plus4: pc_plus4_comb,
+        pred_or_jump_addr: '0,
+        instruction: '0,
+        decode: '0,
+        fp_decode: '0,
+        icache_miss: 1'b1,
+        valid: 1'b0,
+        branch_predicted_taken: 1'b0
+      };
     end
     else begin
-      if (reset_down | flush) begin
-        id_en = 1'b1;
-        id_n = '0;
-      end    
-      else if (stall_id) begin
-        id_en = 1'b0;
-      end
-      // When stall_id is high, icache miss should not be flushing ID.
-      else if (icache_miss_in_pipe | icache_flush_r_lo) begin
-        id_en = 1'b1;
-        id_n = '0;
-      end
-      else if (icache_miss) begin
-        id_en = 1'b1;
-        id_n = '{
-          pc_plus4: {{(data_width_p-pc_width_lp-2){1'b0}}, pc_plus4, 2'b0},
-          pred_or_jump_addr: '0,
-          instruction: '0,
-          decode: '0,
-          fp_decode: '0,
-          icache_miss: 1'b1,
-          valid: 1'b0,
-          branch_predicted_taken: 1'b0
-        };
-      end
-      else begin
-        // common case
-        id_en = 1'b1;
-      end
+      id_en = 1'b1;
+      id_en_fp = 1'b1;
     end
   end
+end
+
 
 
   // regfile read
   wire rf_read_en = ~(stall_id | stall_all);
   assign int_rf_read[0] = id_n.decode.read_rs1 & rf_read_en;
   assign int_rf_read[1] = id_n.decode.read_rs2 & rf_read_en;
-  assign float_rf_read[0] = id_n.decode.read_frs1 & rf_read_en;
-  assign float_rf_read[1] = id_n.decode.read_frs2 & rf_read_en;
-  assign float_rf_read[2] = id_n.decode.read_frs3 & rf_read_en;
+  assign float_rf_read[0] = id_n_fp.decode.read_frs1 & rf_read_en;
+  assign float_rf_read[1] = id_n_fp.decode.read_frs2 & rf_read_en;
+  assign float_rf_read[2] = id_n_fp.decode.read_frs3 & rf_read_en;
+
 
   // helpful control signals;
   wire [reg_addr_width_lp-1:0] id_rs1 = id_r.instruction.rs1;
   wire [reg_addr_width_lp-1:0] id_rs2 = id_r.instruction.rs2;
   wire [reg_addr_width_lp-1:0] id_rs3 = id_r.instruction[31:27];
   wire [reg_addr_width_lp-1:0] id_rd = id_r.instruction.rd;
+
+  //dual issue
+  wire [reg_addr_width_lp-1:0] id_rs1_fp = id_r_fp.instruction.rs1;
+  wire [reg_addr_width_lp-1:0] id_rs2_fp = id_r_fp.instruction.rs2;
+  wire [reg_addr_width_lp-1:0] id_rs3_fp = id_r_fp.instruction[31:27];
+  wire [reg_addr_width_lp-1:0] id_rd_fp = id_r_fp.instruction.rd;
+
   wire remote_req_in_exe = lsu_remote_req_v_lo;
   wire local_load_in_exe = lsu_dmem_v_lo & ~lsu_dmem_w_lo;
   wire id_rs1_non_zero = id_rs1 != '0;
   wire id_rs2_non_zero = id_rs2 != '0;
   wire id_rd_non_zero = id_rd != '0;
   wire int_remote_load_in_exe = remote_req_in_exe & exe_r.decode.is_load_op & exe_r.decode.write_rd;
-  wire float_remote_load_in_exe = remote_req_in_exe & exe_r.decode.is_load_op & exe_r.decode.write_frd;
-  wire fdiv_fsqrt_in_fp_exe = fp_exe_ctrl_r.fp_decode.is_fdiv_op | fp_exe_ctrl_r.fp_decode.is_fsqrt_op;
+  wire float_remote_load_in_exe = remote_req_in_exe & exe_r.decode.is_load_op & exe_r.decode.write_frd; // maybe need to change this
+  wire fdiv_fsqrt_in_fp_exe = fp_exe_ctrl_r.fp_decode.is_fdiv_op | fp_exe_ctrl_r.fp_decode.is_fsqrt_op; // maybe need to change this
   wire remote_credit_pending = (out_credits_used_i != '0);
+
   wire id_rs1_equal_exe_rd = (id_rs1 == exe_r.instruction.rd);
   wire id_rs2_equal_exe_rd = (id_rs2 == exe_r.instruction.rd);
   wire id_rs3_equal_exe_rd = (id_rs3 == exe_r.instruction.rd);
+
   wire id_rs1_equal_fp_exe_rd = (id_rs1 == fp_exe_ctrl_r.rd);
   wire id_rs2_equal_fp_exe_rd = (id_rs2 == fp_exe_ctrl_r.rd);
   wire id_rs3_equal_fp_exe_rd = (id_rs3 == fp_exe_ctrl_r.rd);
+
   wire id_rs1_equal_mem_rd = (id_rs1 == mem_ctrl_r.rd_addr);
   wire id_rs2_equal_mem_rd = (id_rs2 == mem_ctrl_r.rd_addr);
   wire id_rs3_equal_mem_rd = (id_rs3 == mem_ctrl_r.rd_addr);
@@ -1636,14 +1795,14 @@ module vanilla_core
 
   // ID -> FP_EXE
   frm_e fpu_rm;
-  assign fpu_rm = frm_e'((id_r.instruction.funct3 == eDYN)
+  assign fpu_rm = frm_e'((id_r_fp.instruction.funct3 == eDYN)
     ? frm_r
-    : id_r.instruction.funct3);
+    : id_r_fp.instruction.funct3);
 
   always_comb begin
     fp_exe_ctrl_n = '{
-      rd: id_r.instruction.rd,
-      fp_decode: id_r.fp_decode,
+      rd: id_r_fp.instruction.rd,
+      fp_decode: id_r_fp.fp_decode,
       rm: fpu_rm
     };
     fp_exe_data_n = '{
@@ -1657,7 +1816,7 @@ module vanilla_core
       fp_exe_data_en = 1'b0;
     end
     else begin
-      if (flush | stall_id | ~id_r.decode.is_fp_op) begin
+      if (flush | stall_id | ~id_r_fp.decode.is_fp_op) begin
         // put nop in fp_exe.
         // we hold the data inputs steady in the case of a stall,
         // or if there is not a floating point operation
